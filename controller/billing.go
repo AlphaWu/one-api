@@ -1,9 +1,13 @@
 package controller
 
 import (
-	"github.com/gin-gonic/gin"
+	"fmt"
+	"net/http"
 	"one-api/common"
+	"one-api/common/config"
 	"one-api/model"
+
+	"github.com/gin-gonic/gin"
 )
 
 func GetSubscription(c *gin.Context) {
@@ -12,38 +16,41 @@ func GetSubscription(c *gin.Context) {
 	var err error
 	var token *model.Token
 	var expiredTime int64
-	if common.DisplayTokenStatEnabled {
-		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
+
+	tokenId := c.GetInt("token_id")
+	token, err = model.GetTokenById(tokenId)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, fmt.Errorf("获取信息失败: %v", err))
+		return
+	}
+
+	if token.UnlimitedQuota {
+		userId := c.GetInt("id")
+		userData, err := model.GetUserFields(userId, []string{"quota", "used_quota"})
+		if err != nil {
+			common.APIRespondWithError(c, http.StatusOK, fmt.Errorf("获取用户信息失败: %v", err))
+
+			return
+		}
+
+		remainQuota = userData["quota"].(int)
+		usedQuota = userData["used_quota"].(int)
+	} else {
 		expiredTime = token.ExpiredTime
 		remainQuota = token.RemainQuota
 		usedQuota = token.UsedQuota
-	} else {
-		userId := c.GetInt("id")
-		remainQuota, err = model.GetUserQuota(userId)
-		usedQuota, err = model.GetUserUsedQuota(userId)
 	}
+
 	if expiredTime <= 0 {
 		expiredTime = 0
 	}
-	if err != nil {
-		openAIError := OpenAIError{
-			Message: err.Error(),
-			Type:    "upstream_error",
-		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
-		return
-	}
+
 	quota := remainQuota + usedQuota
 	amount := float64(quota)
-	if common.DisplayInCurrencyEnabled {
-		amount /= common.QuotaPerUnit
+	if config.DisplayInCurrencyEnabled {
+		amount /= config.QuotaPerUnit
 	}
-	if token != nil && token.UnlimitedQuota {
-		amount = 100000000
-	}
+
 	subscription := OpenAISubscriptionResponse{
 		Object:             "billing_subscription",
 		HasPaymentMethod:   true,
@@ -53,39 +60,41 @@ func GetSubscription(c *gin.Context) {
 		AccessUntil:        expiredTime,
 	}
 	c.JSON(200, subscription)
-	return
 }
 
 func GetUsage(c *gin.Context) {
 	var quota int
 	var err error
 	var token *model.Token
-	if common.DisplayTokenStatEnabled {
-		tokenId := c.GetInt("token_id")
-		token, err = model.GetTokenById(tokenId)
-		quota = token.UsedQuota
-	} else {
-		userId := c.GetInt("id")
-		quota, err = model.GetUserUsedQuota(userId)
-	}
+
+	tokenId := c.GetInt("token_id")
+	token, err = model.GetTokenById(tokenId)
 	if err != nil {
-		openAIError := OpenAIError{
-			Message: err.Error(),
-			Type:    "one_api_error",
-		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
+		common.APIRespondWithError(c, http.StatusOK, fmt.Errorf("获取信息失败: %v", err))
 		return
 	}
+
+	if token.UnlimitedQuota {
+		userId := c.GetInt("id")
+		userData, err := model.GetUserFields(userId, []string{"used_quota"})
+		if err != nil {
+			common.APIRespondWithError(c, http.StatusOK, fmt.Errorf("获取用户信息失败: %v", err))
+
+			return
+		}
+
+		quota = userData["used_quota"].(int)
+	} else {
+		quota = token.UsedQuota
+	}
+
 	amount := float64(quota)
-	if common.DisplayInCurrencyEnabled {
-		amount /= common.QuotaPerUnit
+	if config.DisplayInCurrencyEnabled {
+		amount /= config.QuotaPerUnit
 	}
 	usage := OpenAIUsageResponse{
 		Object:     "list",
 		TotalUsage: amount * 100,
 	}
 	c.JSON(200, usage)
-	return
 }

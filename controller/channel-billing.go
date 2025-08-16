@@ -1,20 +1,20 @@
 package controller
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"one-api/common"
+	"net/http/httptest"
+	"one-api/common/config"
 	"one-api/model"
+	"one-api/providers"
+	providersBase "one-api/providers/base"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// https://github.com/songquanpeng/one-api/issues/79
+// https://github.com/MartialBE/one-hub/issues/79
 
 type OpenAISubscriptionResponse struct {
 	Object             string  `json:"object"`
@@ -46,216 +46,29 @@ type OpenAIUsageResponse struct {
 	TotalUsage float64 `json:"total_usage"` // unit: 0.01 dollar
 }
 
-type OpenAISBUsageResponse struct {
-	Msg  string `json:"msg"`
-	Data *struct {
-		Credit string `json:"credit"`
-	} `json:"data"`
-}
-
-type AIProxyUserOverviewResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message"`
-	ErrorCode int    `json:"error_code"`
-	Data      struct {
-		TotalPoints float64 `json:"totalPoints"`
-	} `json:"data"`
-}
-
-type API2GPTUsageResponse struct {
-	Object         string  `json:"object"`
-	TotalGranted   float64 `json:"total_granted"`
-	TotalUsed      float64 `json:"total_used"`
-	TotalRemaining float64 `json:"total_remaining"`
-}
-
-type APGC2DGPTUsageResponse struct {
-	//Grants         interface{} `json:"grants"`
-	Object         string  `json:"object"`
-	TotalAvailable float64 `json:"total_available"`
-	TotalGranted   float64 `json:"total_granted"`
-	TotalUsed      float64 `json:"total_used"`
-}
-
-// GetAuthHeader get auth header
-func GetAuthHeader(token string) http.Header {
-	h := http.Header{}
-	h.Add("Authorization", fmt.Sprintf("Bearer %s", token))
-	return h
-}
-
-func GetResponseBody(method, url string, channel *model.Channel, headers http.Header) ([]byte, error) {
-	req, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	for k := range headers {
-		req.Header.Add(k, headers.Get(k))
-	}
-	res, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status code: %d", res.StatusCode)
-	}
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-	err = res.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	return body, nil
-}
-
-func updateChannelCloseAIBalance(channel *model.Channel) (float64, error) {
-	url := fmt.Sprintf("%s/dashboard/billing/credit_grants", channel.GetBaseURL())
-	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
-
-	if err != nil {
-		return 0, err
-	}
-	response := OpenAICreditGrants{}
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		return 0, err
-	}
-	channel.UpdateBalance(response.TotalAvailable)
-	return response.TotalAvailable, nil
-}
-
-func updateChannelOpenAISBBalance(channel *model.Channel) (float64, error) {
-	url := fmt.Sprintf("https://api.openai-sb.com/sb-api/user/status?api_key=%s", channel.Key)
-	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
-	if err != nil {
-		return 0, err
-	}
-	response := OpenAISBUsageResponse{}
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		return 0, err
-	}
-	if response.Data == nil {
-		return 0, errors.New(response.Msg)
-	}
-	balance, err := strconv.ParseFloat(response.Data.Credit, 64)
-	if err != nil {
-		return 0, err
-	}
-	channel.UpdateBalance(balance)
-	return balance, nil
-}
-
-func updateChannelAIProxyBalance(channel *model.Channel) (float64, error) {
-	url := "https://aiproxy.io/api/report/getUserOverview"
-	headers := http.Header{}
-	headers.Add("Api-Key", channel.Key)
-	body, err := GetResponseBody("GET", url, channel, headers)
-	if err != nil {
-		return 0, err
-	}
-	response := AIProxyUserOverviewResponse{}
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		return 0, err
-	}
-	if !response.Success {
-		return 0, fmt.Errorf("code: %d, message: %s", response.ErrorCode, response.Message)
-	}
-	channel.UpdateBalance(response.Data.TotalPoints)
-	return response.Data.TotalPoints, nil
-}
-
-func updateChannelAPI2GPTBalance(channel *model.Channel) (float64, error) {
-	url := "https://api.api2gpt.com/dashboard/billing/credit_grants"
-	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
-
-	if err != nil {
-		return 0, err
-	}
-	response := API2GPTUsageResponse{}
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		return 0, err
-	}
-	channel.UpdateBalance(response.TotalRemaining)
-	return response.TotalRemaining, nil
-}
-
-func updateChannelAIGC2DBalance(channel *model.Channel) (float64, error) {
-	url := "https://api.aigc2d.com/dashboard/billing/credit_grants"
-	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
-	if err != nil {
-		return 0, err
-	}
-	response := APGC2DGPTUsageResponse{}
-	err = json.Unmarshal(body, &response)
-	if err != nil {
-		return 0, err
-	}
-	channel.UpdateBalance(response.TotalAvailable)
-	return response.TotalAvailable, nil
-}
-
 func updateChannelBalance(channel *model.Channel) (float64, error) {
-	baseURL := common.ChannelBaseURLs[channel.Type]
-	if channel.GetBaseURL() == "" {
-		channel.BaseURL = &baseURL
+	req, err := http.NewRequest("POST", "/balance", nil)
+	if err != nil {
+		return 0, err
 	}
-	switch channel.Type {
-	case common.ChannelTypeOpenAI:
-		if channel.GetBaseURL() != "" {
-			baseURL = channel.GetBaseURL()
-		}
-	case common.ChannelTypeAzure:
-		return 0, errors.New("尚未实现")
-	case common.ChannelTypeCustom:
-		baseURL = channel.GetBaseURL()
-	case common.ChannelTypeCloseAI:
-		return updateChannelCloseAIBalance(channel)
-	case common.ChannelTypeOpenAISB:
-		return updateChannelOpenAISBBalance(channel)
-	case common.ChannelTypeAIProxy:
-		return updateChannelAIProxyBalance(channel)
-	case common.ChannelTypeAPI2GPT:
-		return updateChannelAPI2GPTBalance(channel)
-	case common.ChannelTypeAIGC2D:
-		return updateChannelAIGC2DBalance(channel)
-	default:
-		return 0, errors.New("尚未实现")
-	}
-	url := fmt.Sprintf("%s/v1/dashboard/billing/subscription", baseURL)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
 
-	body, err := GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
-	if err != nil {
-		return 0, err
+	req.Header.Set("Content-Type", "application/json")
+
+	provider := providers.GetProvider(channel, c)
+	if provider == nil {
+		return 0, errors.New("provider not found")
 	}
-	subscription := OpenAISubscriptionResponse{}
-	err = json.Unmarshal(body, &subscription)
-	if err != nil {
-		return 0, err
+
+	balanceProvider, ok := provider.(providersBase.BalanceInterface)
+	if !ok {
+		return 0, errors.New("provider not implemented")
 	}
-	now := time.Now()
-	startDate := fmt.Sprintf("%s-01", now.Format("2006-01"))
-	endDate := now.Format("2006-01-02")
-	if !subscription.HasPaymentMethod {
-		startDate = now.AddDate(0, 0, -100).Format("2006-01-02")
-	}
-	url = fmt.Sprintf("%s/v1/dashboard/billing/usage?start_date=%s&end_date=%s", baseURL, startDate, endDate)
-	body, err = GetResponseBody("GET", url, channel, GetAuthHeader(channel.Key))
-	if err != nil {
-		return 0, err
-	}
-	usage := OpenAIUsageResponse{}
-	err = json.Unmarshal(body, &usage)
-	if err != nil {
-		return 0, err
-	}
-	balance := subscription.HardLimitUSD - usage.TotalUsage/100
-	channel.UpdateBalance(balance)
-	return balance, nil
+
+	return balanceProvider.Balance()
+
 }
 
 func UpdateChannelBalance(c *gin.Context) {
@@ -267,7 +80,7 @@ func UpdateChannelBalance(c *gin.Context) {
 		})
 		return
 	}
-	channel, err := model.GetChannelById(id, true)
+	channel, err := model.GetChannelById(id)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -288,20 +101,19 @@ func UpdateChannelBalance(c *gin.Context) {
 		"message": "",
 		"balance": balance,
 	})
-	return
 }
 
 func updateAllChannelsBalance() error {
-	channels, err := model.GetAllChannels(0, 0, true)
+	channels, err := model.GetAllChannels()
 	if err != nil {
 		return err
 	}
 	for _, channel := range channels {
-		if channel.Status != common.ChannelStatusEnabled {
+		if channel.Status != config.ChannelStatusEnabled {
 			continue
 		}
 		// TODO: support Azure
-		if channel.Type != common.ChannelTypeOpenAI && channel.Type != common.ChannelTypeCustom {
+		if channel.Type != config.ChannelTypeOpenAI && channel.Type != config.ChannelTypeCustom {
 			continue
 		}
 		balance, err := updateChannelBalance(channel)
@@ -310,10 +122,10 @@ func updateAllChannelsBalance() error {
 		} else {
 			// err is nil & balance <= 0 means quota is used up
 			if balance <= 0 {
-				disableChannel(channel.Id, channel.Name, "余额不足")
+				DisableChannel(channel.Id, channel.Name, "余额不足", true)
 			}
 		}
-		time.Sleep(common.RequestInterval)
+		time.Sleep(config.RequestInterval)
 	}
 	return nil
 }
@@ -332,14 +144,17 @@ func UpdateAllChannelsBalance(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
-func AutomaticallyUpdateChannels(frequency int) {
-	for {
-		time.Sleep(time.Duration(frequency) * time.Minute)
-		common.SysLog("updating all channels")
-		_ = updateAllChannelsBalance()
-		common.SysLog("channels update done")
-	}
-}
+// func AutomaticallyUpdateChannels(frequency int) {
+// 	if frequency <= 0 {
+// 		return
+// 	}
+
+// 	for {
+// 		time.Sleep(time.Duration(frequency) * time.Minute)
+// 		common.SysLog("updating all channels")
+// 		_ = updateAllChannelsBalance()
+// 		common.SysLog("channels update done")
+// 	}
+// }

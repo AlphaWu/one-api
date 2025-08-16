@@ -1,43 +1,27 @@
 package controller
 
 import (
-	"github.com/gin-gonic/gin"
+	"errors"
 	"net/http"
 	"one-api/common"
+	"one-api/common/utils"
 	"one-api/model"
 	"strconv"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
-func GetAllChannels(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
-	}
-	channels, err := model.GetAllChannels(p*common.ItemsPerPage, common.ItemsPerPage, false)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+func GetChannelsList(c *gin.Context) {
+	var params model.SearchChannelsParams
+	if err := c.ShouldBindQuery(&params); err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    channels,
-	})
-	return
-}
 
-func SearchChannels(c *gin.Context) {
-	keyword := c.Query("keyword")
-	channels, err := model.SearchChannels(keyword)
+	channels, err := model.GetChannelsList(&params)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -45,7 +29,6 @@ func SearchChannels(c *gin.Context) {
 		"message": "",
 		"data":    channels,
 	})
-	return
 }
 
 func GetChannel(c *gin.Context) {
@@ -57,7 +40,7 @@ func GetChannel(c *gin.Context) {
 		})
 		return
 	}
-	channel, err := model.GetChannelById(id, false)
+	channel, err := model.GetChannelById(id)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -70,7 +53,6 @@ func GetChannel(c *gin.Context) {
 		"message": "",
 		"data":    channel,
 	})
-	return
 }
 
 func AddChannel(c *gin.Context) {
@@ -83,15 +65,30 @@ func AddChannel(c *gin.Context) {
 		})
 		return
 	}
-	channel.CreatedTime = common.GetTimestamp()
+	channel.CreatedTime = utils.GetTimestamp()
 	keys := strings.Split(channel.Key, "\n")
+
+	baseUrls := []string{}
+	if channel.BaseURL != nil && *channel.BaseURL != "" {
+		baseUrls = strings.Split(*channel.BaseURL, "\n")
+	}
 	channels := make([]model.Channel, 0, len(keys))
-	for _, key := range keys {
+	for index, key := range keys {
 		if key == "" {
 			continue
 		}
 		localChannel := channel
 		localChannel.Key = key
+		if index > 0 {
+			localChannel.Name = localChannel.Name + "_" + strconv.Itoa(index+1)
+		}
+
+		if len(baseUrls) > index && baseUrls[index] != "" {
+			localChannel.BaseURL = &baseUrls[index]
+		} else if len(baseUrls) > 0 {
+			localChannel.BaseURL = &baseUrls[0]
+		}
+
 		channels = append(channels, localChannel)
 	}
 	err = model.BatchInsertChannels(channels)
@@ -106,7 +103,6 @@ func AddChannel(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
 func DeleteChannel(c *gin.Context) {
@@ -124,7 +120,22 @@ func DeleteChannel(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
+}
+
+func DeleteChannelTag(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	err := model.DeleteChannelTag(id)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
 }
 
 func DeleteDisabledChannel(c *gin.Context) {
@@ -141,7 +152,6 @@ func DeleteDisabledChannel(c *gin.Context) {
 		"message": "",
 		"data":    rows,
 	})
-	return
 }
 
 func UpdateChannel(c *gin.Context) {
@@ -154,7 +164,11 @@ func UpdateChannel(c *gin.Context) {
 		})
 		return
 	}
-	err = channel.Update()
+	if channel.Models == "" {
+		err = channel.Update(false)
+	} else {
+		err = channel.Update(true)
+	}
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -167,5 +181,80 @@ func UpdateChannel(c *gin.Context) {
 		"message": "",
 		"data":    channel,
 	})
-	return
+}
+
+func BatchUpdateChannelsAzureApi(c *gin.Context) {
+	var params model.BatchChannelsParams
+	err := c.ShouldBindJSON(&params)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+
+	if params.Ids == nil || len(params.Ids) == 0 {
+		common.APIRespondWithError(c, http.StatusOK, errors.New("ids不能为空"))
+		return
+	}
+	var count int64
+	count, err = model.BatchUpdateChannelsAzureApi(&params)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":    count,
+		"success": true,
+		"message": "更新成功",
+	})
+}
+
+func BatchDelModelChannels(c *gin.Context) {
+	var params model.BatchChannelsParams
+	err := c.ShouldBindJSON(&params)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+
+	if params.Ids == nil || len(params.Ids) == 0 {
+		common.APIRespondWithError(c, http.StatusOK, errors.New("ids不能为空"))
+		return
+	}
+
+	var count int64
+	count, err = model.BatchDelModelChannels(&params)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":    count,
+		"success": true,
+		"message": "更新成功",
+	})
+}
+
+func BatchDeleteChannel(c *gin.Context) {
+	var params model.BatchChannelsParams
+	err := c.ShouldBindJSON(&params)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+
+	if params.Ids == nil || len(params.Ids) == 0 {
+		common.APIRespondWithError(c, http.StatusOK, errors.New("ids不能为空"))
+		return
+	}
+
+	count, err := model.BatchDeleteChannel(params.Ids)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    count,
+	})
 }

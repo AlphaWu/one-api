@@ -1,31 +1,24 @@
 package controller
 
 import (
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"one-api/common"
 	"one-api/model"
 	"strconv"
+
+	"github.com/gin-gonic/gin"
 )
 
-func GetAllLogs(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
+func GetLogsList(c *gin.Context) {
+	var params model.LogsListParams
+	if err := c.ShouldBindQuery(&params); err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
 	}
-	logType, _ := strconv.Atoi(c.Query("type"))
-	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
-	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
-	username := c.Query("username")
-	tokenName := c.Query("token_name")
-	modelName := c.Query("model_name")
-	channel, _ := strconv.Atoi(c.Query("channel"))
-	logs, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, p*common.ItemsPerPage, common.ItemsPerPage, channel)
+
+	logs, err := model.GetLogsList(&params)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -33,63 +26,20 @@ func GetAllLogs(c *gin.Context) {
 		"message": "",
 		"data":    logs,
 	})
-	return
 }
 
-func GetUserLogs(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
-	}
+func GetUserLogsList(c *gin.Context) {
 	userId := c.GetInt("id")
-	logType, _ := strconv.Atoi(c.Query("type"))
-	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
-	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
-	tokenName := c.Query("token_name")
-	modelName := c.Query("model_name")
-	logs, err := model.GetUserLogs(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, p*common.ItemsPerPage, common.ItemsPerPage)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    logs,
-	})
-	return
-}
 
-func SearchAllLogs(c *gin.Context) {
-	keyword := c.Query("keyword")
-	logs, err := model.SearchAllLogs(keyword)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+	var params model.LogsListParams
+	if err := c.ShouldBindQuery(&params); err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    logs,
-	})
-	return
-}
 
-func SearchUserLogs(c *gin.Context) {
-	keyword := c.Query("keyword")
-	userId := c.GetInt("id")
-	logs, err := model.SearchUserLogs(userId, keyword)
+	logs, err := model.GetUserLogsList(userId, &params)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -97,18 +47,17 @@ func SearchUserLogs(c *gin.Context) {
 		"message": "",
 		"data":    logs,
 	})
-	return
 }
 
 func GetLogsStat(c *gin.Context) {
-	logType, _ := strconv.Atoi(c.Query("type"))
+	// logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
 	tokenName := c.Query("token_name")
 	username := c.Query("username")
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
-	quotaNum := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel)
+	quotaNum := model.SumUsedQuota(startTimestamp, endTimestamp, modelName, username, tokenName, channel)
 	//tokenNum := model.SumUsedToken(logType, startTimestamp, endTimestamp, modelName, username, "")
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -118,18 +67,17 @@ func GetLogsStat(c *gin.Context) {
 			//"token": tokenNum,
 		},
 	})
-	return
 }
 
 func GetLogsSelfStat(c *gin.Context) {
 	username := c.GetString("username")
-	logType, _ := strconv.Atoi(c.Query("type"))
+	// logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
 	tokenName := c.Query("token_name")
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
-	quotaNum := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel)
+	quotaNum := model.SumUsedQuota(startTimestamp, endTimestamp, modelName, username, tokenName, channel)
 	//tokenNum := model.SumUsedToken(logType, startTimestamp, endTimestamp, modelName, username, tokenName)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -139,7 +87,6 @@ func GetLogsSelfStat(c *gin.Context) {
 			//"token": tokenNum,
 		},
 	})
-	return
 }
 
 func DeleteHistoryLogs(c *gin.Context) {
@@ -164,5 +111,4 @@ func DeleteHistoryLogs(c *gin.Context) {
 		"message": "",
 		"data":    count,
 	})
-	return
 }

@@ -3,8 +3,12 @@ package model
 import (
 	"errors"
 	"fmt"
-	"gorm.io/gorm"
 	"one-api/common"
+	"one-api/common/config"
+	"one-api/common/logger"
+	"one-api/common/utils"
+
+	"gorm.io/gorm"
 )
 
 type Redemption struct {
@@ -19,16 +23,23 @@ type Redemption struct {
 	Count        int    `json:"count" gorm:"-:all"` // only for api request
 }
 
-func GetAllRedemptions(startIdx int, num int) ([]*Redemption, error) {
-	var redemptions []*Redemption
-	var err error
-	err = DB.Order("id desc").Limit(num).Offset(startIdx).Find(&redemptions).Error
-	return redemptions, err
+var allowedRedemptionslOrderFields = map[string]bool{
+	"id":            true,
+	"name":          true,
+	"status":        true,
+	"quota":         true,
+	"created_time":  true,
+	"redeemed_time": true,
 }
 
-func SearchRedemptions(keyword string) (redemptions []*Redemption, err error) {
-	err = DB.Where("id = ? or name LIKE ?", keyword, keyword+"%").Find(&redemptions).Error
-	return redemptions, err
+func GetRedemptionsList(params *GenericParams) (*DataResult[Redemption], error) {
+	var redemptions []*Redemption
+	db := DB
+	if params.Keyword != "" {
+		db = db.Where("id = ? or name LIKE ?", utils.String2Int(params.Keyword), params.Keyword+"%")
+	}
+
+	return PaginateAndOrder[Redemption](db, &params.PaginationParams, &redemptions, allowedRedemptionslOrderFields)
 }
 
 func GetRedemptionById(id int) (*Redemption, error) {
@@ -41,7 +52,7 @@ func GetRedemptionById(id int) (*Redemption, error) {
 	return &redemption, err
 }
 
-func Redeem(key string, userId int) (quota int, err error) {
+func Redeem(key string, userId int, ip string) (quota int, err error) {
 	if key == "" {
 		return 0, errors.New("未提供兑换码")
 	}
@@ -60,22 +71,29 @@ func Redeem(key string, userId int) (quota int, err error) {
 		if err != nil {
 			return errors.New("无效的兑换码")
 		}
-		if redemption.Status != common.RedemptionCodeStatusEnabled {
+		if redemption.Status != config.RedemptionCodeStatusEnabled {
 			return errors.New("该兑换码已被使用")
 		}
 		err = tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", redemption.Quota)).Error
 		if err != nil {
 			return err
 		}
-		redemption.RedeemedTime = common.GetTimestamp()
-		redemption.Status = common.RedemptionCodeStatusUsed
+		redemption.RedeemedTime = utils.GetTimestamp()
+		redemption.Status = config.RedemptionCodeStatusUsed
 		err = tx.Save(redemption).Error
 		return err
 	})
 	if err != nil {
 		return 0, errors.New("兑换失败，" + err.Error())
 	}
-	RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s", common.LogQuota(redemption.Quota)))
+
+	// Try to upgrade user group based on cumulative recharge amount
+	err = CheckAndUpgradeUserGroup(userId, redemption.Quota)
+	if err != nil {
+		logger.SysError("failed to check and upgrade user group: " + err.Error())
+	}
+
+	RecordQuotaLog(userId, LogTypeTopup, redemption.Quota, ip, fmt.Sprintf("通过兑换码充值 %s", common.LogQuota(redemption.Quota)))
 	return redemption.Quota, nil
 }
 
@@ -113,4 +131,38 @@ func DeleteRedemptionById(id int) (err error) {
 		return err
 	}
 	return redemption.Delete()
+}
+
+type RedemptionStatistics struct {
+	Count  int64 `json:"count"`
+	Quota  int64 `json:"quota"`
+	Status int   `json:"status"`
+}
+
+func GetStatisticsRedemption() (redemptionStatistics []*RedemptionStatistics, err error) {
+	err = DB.Model(&Redemption{}).Select("status", "count(*) as count", "sum(quota) as quota").Where("status != ?", 2).Group("status").Scan(&redemptionStatistics).Error
+	return redemptionStatistics, err
+}
+
+type RedemptionStatisticsGroup struct {
+	Date      string `json:"date"`
+	Quota     int64  `json:"quota"`
+	UserCount int64  `json:"user_count"`
+}
+
+func GetStatisticsRedemptionByPeriod(startTimestamp, endTimestamp int64) (redemptionStatistics []*RedemptionStatisticsGroup, err error) {
+	groupSelect := getTimestampGroupsSelect("redeemed_time", "day", "date")
+
+	err = DB.Raw(`
+		SELECT `+groupSelect+`,
+		sum(quota) as quota,
+		count(distinct user_id) as user_count
+		FROM redemptions
+		WHERE status=3
+		AND redeemed_time BETWEEN ? AND ?
+		GROUP BY date
+		ORDER BY date
+	`, startTimestamp, endTimestamp).Scan(&redemptionStatistics).Error
+
+	return redemptionStatistics, err
 }

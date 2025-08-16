@@ -1,42 +1,25 @@
 package controller
 
 import (
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"one-api/common"
+	"one-api/common/utils"
 	"one-api/model"
 	"strconv"
+
+	"github.com/gin-gonic/gin"
 )
 
-func GetAllRedemptions(c *gin.Context) {
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
-	}
-	redemptions, err := model.GetAllRedemptions(p*common.ItemsPerPage, common.ItemsPerPage)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+func GetRedemptionsList(c *gin.Context) {
+	var params model.GenericParams
+	if err := c.ShouldBindQuery(&params); err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    redemptions,
-	})
-	return
-}
 
-func SearchRedemptions(c *gin.Context) {
-	keyword := c.Query("keyword")
-	redemptions, err := model.SearchRedemptions(keyword)
+	redemptions, err := model.GetRedemptionsList(&params)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -44,7 +27,6 @@ func SearchRedemptions(c *gin.Context) {
 		"message": "",
 		"data":    redemptions,
 	})
-	return
 }
 
 func GetRedemption(c *gin.Context) {
@@ -69,7 +51,6 @@ func GetRedemption(c *gin.Context) {
 		"message": "",
 		"data":    redemption,
 	})
-	return
 }
 
 func AddRedemption(c *gin.Context) {
@@ -105,12 +86,12 @@ func AddRedemption(c *gin.Context) {
 	}
 	var keys []string
 	for i := 0; i < redemption.Count; i++ {
-		key := common.GetUUID()
+		key := utils.GetUUID()
 		cleanRedemption := model.Redemption{
 			UserId:      c.GetInt("id"),
 			Name:        redemption.Name,
 			Key:         key,
-			CreatedTime: common.GetTimestamp(),
+			CreatedTime: utils.GetTimestamp(),
 			Quota:       redemption.Quota,
 		}
 		err = cleanRedemption.Insert()
@@ -129,7 +110,6 @@ func AddRedemption(c *gin.Context) {
 		"message": "",
 		"data":    keys,
 	})
-	return
 }
 
 func DeleteRedemption(c *gin.Context) {
@@ -146,7 +126,6 @@ func DeleteRedemption(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
 func UpdateRedemption(c *gin.Context) {
@@ -188,5 +167,4 @@ func UpdateRedemption(c *gin.Context) {
 		"message": "",
 		"data":    cleanRedemption,
 	})
-	return
 }

@@ -1,44 +1,28 @@
 package controller
 
 import (
-	"github.com/gin-gonic/gin"
+	"errors"
 	"net/http"
 	"one-api/common"
+	"one-api/common/config"
+	"one-api/common/utils"
 	"one-api/model"
 	"strconv"
+
+	"github.com/gin-gonic/gin"
 )
 
-func GetAllTokens(c *gin.Context) {
+func GetUserTokensList(c *gin.Context) {
 	userId := c.GetInt("id")
-	p, _ := strconv.Atoi(c.Query("p"))
-	if p < 0 {
-		p = 0
-	}
-	tokens, err := model.GetAllUserTokens(userId, p*common.ItemsPerPage, common.ItemsPerPage)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+	var params model.GenericParams
+	if err := c.ShouldBindQuery(&params); err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    tokens,
-	})
-	return
-}
 
-func SearchTokens(c *gin.Context) {
-	userId := c.GetInt("id")
-	keyword := c.Query("keyword")
-	tokens, err := model.SearchUserTokens(userId, keyword)
+	tokens, err := model.GetUserTokensList(userId, &params)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		common.APIRespondWithError(c, http.StatusOK, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -46,7 +30,6 @@ func SearchTokens(c *gin.Context) {
 		"message": "",
 		"data":    tokens,
 	})
-	return
 }
 
 func GetToken(c *gin.Context) {
@@ -72,34 +55,43 @@ func GetToken(c *gin.Context) {
 		"message": "",
 		"data":    token,
 	})
-	return
 }
 
-func GetTokenStatus(c *gin.Context) {
-	tokenId := c.GetInt("token_id")
+func GetPlaygroundToken(c *gin.Context) {
+	tokenName := "sys_playground"
 	userId := c.GetInt("id")
-	token, err := model.GetTokenByIds(tokenId, userId)
+	token, err := model.GetTokenByName(tokenName, userId)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
+		cleanToken := model.Token{
+			UserId: userId,
+			Name:   tokenName,
+			// Key:            utils.GenerateKey(),
+			CreatedTime:    utils.GetTimestamp(),
+			AccessedTime:   utils.GetTimestamp(),
+			ExpiredTime:    0,
+			RemainQuota:    0,
+			UnlimitedQuota: true,
+		}
+		err = cleanToken.Insert()
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "创建令牌失败，请去系统手动配置一个名称为：sys_playground 的令牌",
+			})
+			return
+		}
+		token = &cleanToken
 	}
-	expiredAt := token.ExpiredTime
-	if expiredAt == -1 {
-		expiredAt = 0
-	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"object":          "credit_summary",
-		"total_granted":   token.RemainQuota,
-		"total_used":      0, // not supported currently
-		"total_available": token.RemainQuota,
-		"expires_at":      expiredAt * 1000,
+		"success": true,
+		"message": "",
+		"data":    token.Key,
 	})
 }
 
 func AddToken(c *gin.Context) {
+	userId := c.GetInt("id")
 	token := model.Token{}
 	err := c.ShouldBindJSON(&token)
 	if err != nil {
@@ -116,15 +108,36 @@ func AddToken(c *gin.Context) {
 		})
 		return
 	}
+
+	if token.Group != "" {
+		err = validateTokenGroup(token.Group, userId)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
+	setting := token.Setting.Data()
+	err = validateTokenSetting(&setting)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+
 	cleanToken := model.Token{
-		UserId:         c.GetInt("id"),
-		Name:           token.Name,
-		Key:            common.GenerateKey(),
-		CreatedTime:    common.GetTimestamp(),
-		AccessedTime:   common.GetTimestamp(),
+		UserId: userId,
+		Name:   token.Name,
+		// Key:            utils.GenerateKey(),
+		CreatedTime:    utils.GetTimestamp(),
+		AccessedTime:   utils.GetTimestamp(),
 		ExpiredTime:    token.ExpiredTime,
 		RemainQuota:    token.RemainQuota,
 		UnlimitedQuota: token.UnlimitedQuota,
+		Group:          token.Group,
+		Setting:        token.Setting,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -138,7 +151,6 @@ func AddToken(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
 func DeleteToken(c *gin.Context) {
@@ -156,7 +168,6 @@ func DeleteToken(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
-	return
 }
 
 func UpdateToken(c *gin.Context) {
@@ -178,6 +189,14 @@ func UpdateToken(c *gin.Context) {
 		})
 		return
 	}
+
+	setting := token.Setting.Data()
+	err = validateTokenSetting(&setting)
+	if err != nil {
+		common.APIRespondWithError(c, http.StatusOK, err)
+		return
+	}
+
 	cleanToken, err := model.GetTokenByIds(token.Id, userId)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -186,15 +205,15 @@ func UpdateToken(c *gin.Context) {
 		})
 		return
 	}
-	if token.Status == common.TokenStatusEnabled {
-		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
+	if token.Status == config.TokenStatusEnabled {
+		if cleanToken.Status == config.TokenStatusExpired && cleanToken.ExpiredTime <= utils.GetTimestamp() && cleanToken.ExpiredTime != -1 {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "令牌已过期，无法启用，请先修改令牌过期时间，或者设置为永不过期",
 			})
 			return
 		}
-		if cleanToken.Status == common.TokenStatusExhausted && cleanToken.RemainQuota <= 0 && !cleanToken.UnlimitedQuota {
+		if cleanToken.Status == config.TokenStatusExhausted && cleanToken.RemainQuota <= 0 && !cleanToken.UnlimitedQuota {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "令牌可用额度已用尽，无法启用，请先修改令牌剩余额度，或者设置为无限额度",
@@ -202,6 +221,18 @@ func UpdateToken(c *gin.Context) {
 			return
 		}
 	}
+
+	if cleanToken.Group != token.Group && token.Group != "" {
+		err = validateTokenGroup(token.Group, userId)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
 	if statusOnly != "" {
 		cleanToken.Status = token.Status
 	} else {
@@ -210,6 +241,8 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ExpiredTime = token.ExpiredTime
 		cleanToken.RemainQuota = token.RemainQuota
 		cleanToken.UnlimitedQuota = token.UnlimitedQuota
+		cleanToken.Group = token.Group
+		cleanToken.Setting = token.Setting
 	}
 	err = cleanToken.Update()
 	if err != nil {
@@ -224,5 +257,36 @@ func UpdateToken(c *gin.Context) {
 		"message": "",
 		"data":    cleanToken,
 	})
-	return
+}
+
+func validateTokenGroup(tokenGroup string, userId int) error {
+	userGroup, _ := model.CacheGetUserGroup(userId)
+	if userGroup == "" {
+		return errors.New("获取用户组信息失败")
+	}
+
+	groupRatio := model.GlobalUserGroupRatio.GetBySymbol(tokenGroup)
+	if groupRatio == nil {
+		return errors.New("无效的用户组")
+	}
+
+	if !groupRatio.Public && userGroup != tokenGroup {
+		return errors.New("当前用户组无权使用指定的分组")
+	}
+
+	return nil
+}
+
+func validateTokenSetting(setting *model.TokenSetting) error {
+	if setting == nil {
+		return nil
+	}
+
+	if setting.Heartbeat.Enabled {
+		if setting.Heartbeat.TimeoutSeconds < 30 || setting.Heartbeat.TimeoutSeconds > 90 {
+			return errors.New("heartbeat timeout seconds must be between 30 and 90")
+		}
+	}
+
+	return nil
 }
